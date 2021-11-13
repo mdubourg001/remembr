@@ -2,16 +2,24 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/joho/godotenv"
+	"github.com/olebedev/when"
+	"github.com/olebedev/when/rules/common"
+	"github.com/olebedev/when/rules/en"
 	tb "gopkg.in/tucnak/telebot.v2"
 )
 
-func handler(request events.APIGatewayProxyRequest) (err error) {
+func main() {
+	// loading .env file
+	godotenv.Load()
+
 	b, err := tb.NewBot(tb.Settings{
 		Token:       os.Getenv("REMEMBR_TELEGRAM_BOT_TOKEN"),
 		Synchronous: true,
@@ -22,22 +30,54 @@ func handler(request events.APIGatewayProxyRequest) (err error) {
 		return
 	}
 
-	b.Handle("/hello", func(m *tb.Message) {
-		b.Send(m.Sender, "Hello World!")
+	// initialising natural language parser
+	w := when.New(nil)
+	w.Add(en.All...)
+	w.Add(common.All...)
+	// TODO: get timezone from user preferences
+	tz, _ := time.LoadLocation("Europe/Paris")
+
+	b.Handle(tb.OnText, func(m *tb.Message) {
+		r, err := w.Parse(m.Text, time.Now().In(tz))
+
+		// an error has occurred
+		if err != nil {
+			b.Send(
+				m.Sender,
+				"Something wrong happened while handling your message, please try again later.",
+			)
+		}
+
+		// no date matching was found in the message
+		if r == nil {
+			b.Send(m.Sender, "Invalid task and/or date format.")
+			return
+		}
+
+		// TODO: store reminder in database
+
+		todo := m.Text[0:r.Index]
+		b.Send(m.Sender, fmt.Sprintf(
+			"✅ I will remind you \"%s\" on %s",
+			todo,
+			// TODO: format this prettier
+			r.Time.String(),
+		))
 	})
 
-	var u tb.Update
-	if err = json.Unmarshal([]byte(request.Body), &u); err == nil {
-		b.ProcessUpdate(u)
-	}
-
-	return
-}
-
-func main() {
-	// loading .env file
-	godotenv.Load()
-
 	// Make the handler available for Remote Procedure Call by AWS Lambda
-	lambda.Start(handler)
+	lambda.Start(func(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+		var u tb.Update
+		if err = json.Unmarshal([]byte(req.Body), &u); err == nil {
+			b.ProcessUpdate(u)
+
+			return &events.APIGatewayProxyResponse{
+				StatusCode: 200,
+			}, nil
+		}
+
+		return &events.APIGatewayProxyResponse{
+			StatusCode: 400,
+		}, nil
+	})
 }
