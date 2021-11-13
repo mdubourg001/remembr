@@ -1,2 +1,5 @@
+[build]
+  command = "chmod +x ./refresh-webhook.sh && ./refresh-webhook.sh https://remembr-telegram-bot.netlify.app"
+
 [functions]
   directory = "functions"

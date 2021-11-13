@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -15,6 +17,42 @@ import (
 	"github.com/olebedev/when/rules/en"
 	tb "gopkg.in/tucnak/telebot.v2"
 )
+
+type Reminder struct {
+	Object     string
+	RemindDate string
+	SenderId   string
+}
+
+func insertReminder(reminder *Reminder) error {
+	endpoint := fmt.Sprintf("%s/rest/v1/Reminder", os.Getenv("SUPABASE_URL"))
+
+	payload, err := json.Marshal(&map[string]string{
+		"object":      reminder.Object,
+		"remind_date": reminder.RemindDate,
+		"sender_id":   reminder.SenderId,
+	})
+
+	if err != nil {
+		log.Fatalf("error while encoding reminder. %s", err)
+	}
+
+	client := &http.Client{Timeout: time.Second * 10}
+	request, _ := http.NewRequest("POST", endpoint, bytes.NewBuffer(payload))
+
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("apikey", os.Getenv("SUPABASE_SECRET_KEY"))
+	request.Header.Set("Authorization", "Bearer "+os.Getenv("SUPABASE_SECRET_KEY"))
+	request.Header.Set("Prefer", "return=representation")
+
+	response, _ := client.Do(request)
+
+	if err != nil || response.StatusCode != 201 {
+		log.Fatalf("error while POSTing reminder. %s", err)
+	}
+
+	return nil
+}
 
 func main() {
 	// loading .env file
@@ -49,23 +87,33 @@ func main() {
 		}
 
 		// no date matching was found in the message
-		if r == nil {
+		if r == nil || m.Text[0:r.Index] == "" {
 			b.Send(m.Sender, "Invalid task and/or date format.")
 			return
 		}
 
-		// TODO: store reminder in database
+		reminder := Reminder{
+			Object:     m.Text[0:r.Index],
+			RemindDate: r.Time.Format(time.RFC3339), // 2006-01-02T15:04:05Z07:00
+			SenderId:   fmt.Sprint(m.Sender.ID),
+		}
 
-		todo := m.Text[0:r.Index]
+		// inserting reminders in database
+		err = insertReminder(&reminder)
+		if err != nil {
+			b.Send(
+				m.Sender,
+				"Something wrong happened while handling your message, please try again later.",
+			)
+		}
+
 		b.Send(m.Sender, fmt.Sprintf(
 			"✅ I will remind you \"%s\" on %s",
-			todo,
-			// TODO: format this prettier
-			r.Time.String(),
+			reminder.Object,
+			r.Time.Format(time.RFC850),
 		))
 	})
 
-	// Make the handler available for Remote Procedure Call by AWS Lambda
 	lambda.Start(func(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 		var u tb.Update
 		if err = json.Unmarshal([]byte(req.Body), &u); err == nil {
