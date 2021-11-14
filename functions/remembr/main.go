@@ -54,6 +54,10 @@ func insertReminder(reminder *Reminder) error {
 	return nil
 }
 
+func listPendingReminders() {
+	//endpoint := fmt.Sprintf("%s/rest/v1/Reminder", os.Getenv("SUPABASE_URL"))
+}
+
 func main() {
 	// loading .env file
 	godotenv.Load()
@@ -76,7 +80,8 @@ func main() {
 	tz, _ := time.LoadLocation("Europe/Paris")
 
 	b.Handle(tb.OnText, func(m *tb.Message) {
-		r, err := w.Parse(m.Text, time.Now().In(tz))
+		now := time.Now().In(tz)
+		r, err := w.Parse(m.Text, now)
 
 		// an error has occurred
 		if err != nil {
@@ -89,6 +94,12 @@ func main() {
 		// no date matching was found in the message
 		if r == nil || m.Text[0:r.Index] == "" {
 			b.Send(m.Sender, "Invalid task and/or date format.")
+			return
+		}
+
+		// given date in in the past
+		if r.Time.Before(now) {
+			b.Send(m.Sender, "Given date should be in the future.")
 			return
 		}
 
@@ -115,17 +126,29 @@ func main() {
 	})
 
 	lambda.Start(func(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
-		var u tb.Update
-		if err = json.Unmarshal([]byte(req.Body), &u); err == nil {
-			b.ProcessUpdate(u)
+		if req.HTTPMethod == "GET" {
+			// reminders :=
 
 			return &events.APIGatewayProxyResponse{
 				StatusCode: 200,
 			}, nil
+		} else if req.HTTPMethod == "POST" {
+			var u tb.Update
+			if err = json.Unmarshal([]byte(req.Body), &u); err == nil {
+				b.ProcessUpdate(u)
+
+				return &events.APIGatewayProxyResponse{
+					StatusCode: 200,
+				}, nil
+			}
+
+			return &events.APIGatewayProxyResponse{
+				StatusCode: 400,
+			}, nil
 		}
 
 		return &events.APIGatewayProxyResponse{
-			StatusCode: 400,
+			StatusCode: 405,
 		}, nil
 	})
 }
