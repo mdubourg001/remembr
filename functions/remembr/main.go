@@ -202,7 +202,9 @@ func main() {
 				}
 			}
 
-			err = DeletePassedReminders()
+			if len(*reminders) > 0 {
+				err = DeletePassedReminders()
+			}
 
 			if err == nil {
 				return &events.APIGatewayProxyResponse{
