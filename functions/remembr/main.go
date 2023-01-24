@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -50,6 +51,23 @@ func GetPreparedHttpClient(
 	request.Header.Set("Prefer", "return=representation")
 
 	return client, request
+}
+
+func ForgePendingReminderMessage(object string) string {
+	return fmt.Sprintf("📣 %s", object)
+}
+
+func ParsePendingReminderMessage(message string) string {
+	messageOnly := strings.Fields(message)[1:]
+	return strings.Join(messageOnly, " ")
+}
+
+func CreateReminder(object string, remindDate time.Time, senderID int) Reminder {
+	return Reminder{
+		Object:     object,
+		RemindDate: remindDate.Format(time.RFC3339), // 2006-01-02T15:04:05Z07:00
+		SenderId:   fmt.Sprint(senderID),
+	}
 }
 
 func InsertReminder(reminder *Reminder) error {
@@ -137,6 +155,16 @@ func main() {
 		return
 	}
 
+	// snooze buttons durations
+	btns := [5]string{"5m", "20m", "1h", "3h", "1d"}
+
+	btnsDurations := make(map[string]time.Duration)
+	btnsDurations[btns[0]] = time.Minute * 5
+	btnsDurations[btns[1]] = time.Minute * 20
+	btnsDurations[btns[2]] = time.Hour * 1
+	btnsDurations[btns[3]] = time.Hour * 3
+	btnsDurations[btns[4]] = time.Hour * 24
+
 	// initialising natural language parser
 	w := when.New(nil)
 	w.Add(en.All...)
@@ -144,6 +172,33 @@ func main() {
 	// TODO: get timezone from user preferences
 	tz, _ := time.LoadLocation("Europe/Paris")
 
+	// handler for inline keyboard buttons (snooze buttons)
+	b.Handle(tb.OnCallback, func(c *tb.Callback) {
+		data := strings.Split(c.Data, "|")
+		object := data[1]
+		btn := data[2]
+
+		remindDate := time.Now().In(tz).Add(btnsDurations[btn])
+		reminder := CreateReminder(object, remindDate, c.Sender.ID)
+		err = InsertReminder(&reminder)
+		if err != nil {
+			b.Send(
+				c.Sender,
+				"❌ Something wrong happened while handling your message, please try again later.",
+			)
+			return
+		}
+
+		b.Send(c.Sender, fmt.Sprintf(
+			"✅ I will remind you \"%s\" on %s",
+			reminder.Object,
+			remindDate,
+		))
+
+		b.Respond(c, &tb.CallbackResponse{})
+	})
+
+	// handler for regular reminder messages
 	b.Handle(tb.OnText, func(m *tb.Message) {
 		now := time.Now().In(tz)
 		r, err := w.Parse(m.Text, now)
@@ -168,19 +223,15 @@ func main() {
 			return
 		}
 
-		reminder := Reminder{
-			Object:     m.Text[0 : r.Index-1],
-			RemindDate: r.Time.Format(time.RFC3339), // 2006-01-02T15:04:05Z07:00
-			SenderId:   fmt.Sprint(m.Sender.ID),
-		}
-
 		// inserting reminders in database
+		reminder := CreateReminder(m.Text[0:r.Index-1], r.Time, m.Sender.ID)
 		err = InsertReminder(&reminder)
 		if err != nil {
 			b.Send(
 				m.Sender,
 				"❌ Something wrong happened while handling your message, please try again later.",
 			)
+			return
 		}
 
 		b.Send(m.Sender, fmt.Sprintf(
@@ -196,9 +247,24 @@ func main() {
 
 			if err == nil {
 				for _, reminder := range *reminders {
-					b.Send(&tb.User{ID: reminder.Sender_id}, fmt.Sprintf("📣 %s", reminder.Object))
+					snoozeKb := &tb.ReplyMarkup{}
 
-					// TODO: Add snooze feature
+					row := make([]tb.Btn, 0)
+					for _, strDur := range btns {
+						btn := snoozeKb.Data(
+							strDur,
+							fmt.Sprintf("%d_%s", reminder.Id, strDur),
+							reminder.Object,
+							strDur,
+						)
+
+						row = append(row, btn)
+					}
+
+					snoozeKb.Inline(row)
+
+					reminderMessage := ForgePendingReminderMessage(reminder.Object)
+					b.Send(&tb.User{ID: reminder.Sender_id}, reminderMessage, snoozeKb)
 				}
 			}
 
