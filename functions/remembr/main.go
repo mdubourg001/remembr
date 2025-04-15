@@ -71,6 +71,8 @@ func CreateReminder(object string, remindDate time.Time, senderID int) Reminder 
 }
 
 func InsertReminder(reminder *Reminder) error {
+	log.Printf("Creating new reminder: %+v", reminder)
+
 	payload, err := json.Marshal(&map[string]string{
 		"object":      reminder.Object,
 		"remind_date": reminder.RemindDate,
@@ -82,18 +84,22 @@ func InsertReminder(reminder *Reminder) error {
 	}
 
 	client, request := GetPreparedHttpClient("POST", bytes.NewBuffer(payload), "")
+	log.Printf("Sending POST request to create reminder")
 	response, err := client.Do(request)
 
 	if err != nil || response.StatusCode != 201 {
 		log.Fatalf("error while POSTing reminder. %s", err)
 	}
 
+	log.Printf("Successfully created reminder with status code: %d", response.StatusCode)
 	return err
 }
 
 func ListPendingReminders() (*[]ApiReminder, error) {
 	tz, _ := time.LoadLocation("Europe/Paris")
 	now := time.Now().In(tz)
+
+	log.Printf("Fetching pending reminders for time: %s", now.Format(time.RFC3339))
 
 	client, request := GetPreparedHttpClient(
 		"GET",
@@ -116,9 +122,7 @@ func ListPendingReminders() (*[]ApiReminder, error) {
 	var reminders []ApiReminder
 	err = json.Unmarshal(bodyBytes, &reminders)
 
-	if err != nil {
-		log.Fatal(err)
-	}
+	log.Printf("Found %d pending reminders", len(reminders))
 
 	return &reminders, err
 }
@@ -126,6 +130,8 @@ func ListPendingReminders() (*[]ApiReminder, error) {
 func DeletePassedReminders() error {
 	tz, _ := time.LoadLocation("Europe/Paris")
 	now := time.Now().In(tz)
+
+	log.Printf("Deleting reminders before: %s", now.Format(time.RFC3339))
 
 	client, request := GetPreparedHttpClient(
 		"DELETE",
@@ -138,6 +144,7 @@ func DeletePassedReminders() error {
 		log.Fatalf("error while deleting passed reminders. %s", err)
 	}
 
+	log.Printf("Successfully deleted passed reminders with status code: %d", response.StatusCode)
 	return err
 }
 
@@ -242,10 +249,13 @@ func main() {
 	})
 
 	lambda.Start(func(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+		log.Printf("Received %s request", req.HTTPMethod)
+
 		if req.HTTPMethod == "GET" {
 			reminders, err := ListPendingReminders()
 
 			if err == nil {
+				log.Printf("Processing %d pending reminders", len(*reminders))
 				for _, reminder := range *reminders {
 					snoozeKb := &tb.ReplyMarkup{}
 
@@ -278,25 +288,29 @@ func main() {
 				}, nil
 			}
 
+			log.Printf("Error processing reminders: %s", err)
 			return &events.APIGatewayProxyResponse{
 				StatusCode: 500,
 				Body:       err.Error(),
 			}, nil
 		} else if req.HTTPMethod == "POST" {
+			log.Printf("Processing webhook update")
 			var u tb.Update
 			if err = json.Unmarshal([]byte(req.Body), &u); err == nil {
 				b.ProcessUpdate(u)
-
+				log.Printf("Successfully processed webhook update")
 				return &events.APIGatewayProxyResponse{
 					StatusCode: 200,
 				}, nil
 			}
 
+			log.Printf("Failed to process webhook update: %s", err)
 			return &events.APIGatewayProxyResponse{
 				StatusCode: 400,
 			}, nil
 		}
 
+		log.Printf("Method not allowed: %s", req.HTTPMethod)
 		return &events.APIGatewayProxyResponse{
 			StatusCode: 405,
 		}, nil
